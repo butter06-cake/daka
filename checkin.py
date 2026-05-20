@@ -4,6 +4,7 @@ from datetime import datetime
 import io
 from PIL import Image, ImageDraw
 import math
+import requests  # 用于反向地理编码（可选）
 
 # ================== 配置参数 ==================
 FACTORY_LAT = 31.3040
@@ -15,59 +16,77 @@ SIGN_OUT_START = "17:00"
 SIGN_OUT_END = "18:00"
 ADMIN_PASSWORD = "admin123"
 
-# 数据存储（保留原session方式，如需永久化可改为数据库/文件）
+# 数据存储
 if "daka_data" not in st.session_state:
     st.session_state.daka_data = pd.DataFrame()
+
+# 定位存储
+if "user_lat" not in st.session_state:
+    st.session_state.user_lat = None
+if "user_lon" not in st.session_state:
+    st.session_state.user_lon = None
 
 st.set_page_config(page_title="荣基打卡", layout="wide")
 st.title("🏭 荣基精密｜现场打卡")
 
-# ================== 自动定位（点击按钮获取GPS） ==================
-col1, col2, col3 = st.columns([2, 1, 2])
+# ================== 自动定位（无法手动修改） ==================
+st.subheader("📍 自动定位（系统获取，不可修改）")
+
+col1, col2 = st.columns(2)
 with col1:
-    user_lat = st.number_input("纬度", value=FACTORY_LAT, format="%.6f", key="user_lat")
+    # 只读显示纬度
+    lat_display = st.text_input("纬度", value=str(st.session_state.user_lat) if st.session_state.user_lat else "未获取", disabled=True)
 with col2:
-    user_lon = st.number_input("经度", value=FACTORY_LON, format="%.6f", key="user_lon")
-with col3:
-    # 自定义HTML按钮，用于调用浏览器定位并填充上述两个输入框
+    lon_display = st.text_input("经度", value=str(st.session_state.user_lon) if st.session_state.user_lon else "未获取", disabled=True)
+
+# 定位按钮与逻辑
+if st.button("📡 获取当前位置", use_container_width=True):
+    # 注入JS获取定位，并通过URL参数回传
     st.markdown("""
-        <button id="getLocationBtn" style="margin-top: 28px; background-color:#3b82f6; color:white; border:none; border-radius:8px; padding:6px 16px; cursor:pointer;">
-            📍 获取当前定位
-        </button>
         <script>
-            function setCoordinates(lat, lon) {
-                // 找到Streamlit的number_input对应的input元素并设置值
-                const latInput = window.parent.document.querySelector('input[aria-label="纬度"]');
-                const lonInput = window.parent.document.querySelector('input[aria-label="经度"]');
-                if (latInput && lonInput) {
-                    latInput.value = lat.toFixed(6);
-                    lonInput.value = lon.toFixed(6);
-                    // 触发input事件让Streamlit知道数值已变化
-                    latInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    lonInput.dispatchEvent(new Event('input', { bubbles: true }));
-                } else {
-                    alert("未找到坐标输入框，请刷新页面重试");
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    const lat = pos.coords.latitude;
+                    const lon = pos.coords.longitude;
+                    // 将坐标附加到URL参数并刷新页面
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('lat', lat.toFixed(6));
+                    url.searchParams.set('lon', lon.toFixed(6));
+                    window.location.href = url.toString();
+                },
+                (err) => {
+                    alert("定位失败：" + err.message + "\\n请检查位置权限");
                 }
-            }
-            document.getElementById('getLocationBtn').onclick = () => {
-                if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(
-                        (pos) => {
-                            setCoordinates(pos.coords.latitude, pos.coords.longitude);
-                            alert("定位成功！");
-                        },
-                        (err) => {
-                            alert("定位失败：" + err.message + "\\n请检查位置权限");
-                        }
-                    );
-                } else {
-                    alert("浏览器不支持地理定位");
-                }
-            };
+            );
+        } else {
+            alert("浏览器不支持地理定位");
+        }
         </script>
     """, unsafe_allow_html=True)
 
-# ================== 距离与厂区判断 ==================
+# 从URL参数读取坐标（Streamlit 1.30+ 支持 st.query_params）
+try:
+    query_params = st.query_params
+    if "lat" in query_params and "lon" in query_params:
+        st.session_state.user_lat = float(query_params["lat"])
+        st.session_state.user_lon = float(query_params["lon"])
+        # 清除URL参数，避免重复读取
+        st.query_params.clear()
+        st.rerun()
+except AttributeError:
+    # 兼容旧版Streamlit，使用 st.experimental_get_query_params
+    pass
+
+# 坐标有效性判断
+has_location = st.session_state.user_lat is not None and st.session_state.user_lon is not None
+
+if has_location:
+    st.success(f"✅ 定位成功：纬度 {st.session_state.user_lat:.6f}，经度 {st.session_state.user_lon:.6f}")
+else:
+    st.warning("⚠️ 尚未获取位置，请点击上方按钮获取当前位置")
+
+# ================== 距离与厂区判断（仅当有坐标时计算） ==================
 def get_dist(lat1, lon1, lat2, lon2):
     R = 6371000
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
@@ -78,30 +97,34 @@ def get_dist(lat1, lon1, lat2, lon2):
                        math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2))
     )
 
-distance = get_dist(user_lat, user_lon, FACTORY_LAT, FACTORY_LON)
-in_factory = distance <= ALLOW_RADIUS
-
-if in_factory:
-    st.success(f"✅ 厂区范围内｜距离{distance:.0f}米")
+if has_location:
+    distance = get_dist(st.session_state.user_lat, st.session_state.user_lon, FACTORY_LAT, FACTORY_LON)
+    in_factory = distance <= ALLOW_RADIUS
+    if in_factory:
+        st.success(f"✅ 厂区范围内｜距离{distance:.0f}米")
+    else:
+        st.error(f"❌ 不在厂区（当前距离{distance:.0f}米），禁止打卡")
 else:
-    st.error(f"❌ 不在厂区（当前距离{distance:.0f}米），禁止打卡")
+    in_factory = False
+    distance = None
 
-# ================== 基本信息录入（仅在厂区内可填） ==================
-disabled = not in_factory
+disabled = not (has_location and in_factory)
+
+# ================== 基本信息录入（仅在厂区内且定位成功后可填） ==================
 name = st.text_input("姓名 *", disabled=disabled)
 phone = st.text_input("手机号 *", disabled=disabled)
 id_card = st.text_input("身份证 *", disabled=disabled)
 
 company = st.radio(
-    "劳务公司", 
+    "劳务公司",
     ["苏州众达人力","苏州博仁劳务","苏州汇思人力","苏州优才派遣","其它"],
-    horizontal=True, 
+    horizontal=True,
     disabled=disabled
 )
 other_company = st.text_input("劳务全称", disabled=disabled) if company == "其它" else ""
 
 workshop = st.selectbox(
-    "车间", 
+    "车间",
     ["冲压车间","注塑车间","装配车间","质检车间","仓储物料区","办公区"],
     disabled=disabled
 )
@@ -112,7 +135,7 @@ job = st.selectbox(
 )
 clock_type = st.radio("打卡类型", ["签到","签退"], horizontal=True, disabled=disabled)
 
-# ================== 强制现场拍照（只能当场拍，不能从相册选） ==================
+# ================== 强制现场拍照 ==================
 st.subheader("📷 现场实时拍照（只能当场拍摄，禁止旧照片）")
 camera_image = st.camera_input("请拍摄人脸+厂区背景", disabled=disabled, label_visibility="collapsed")
 
@@ -136,18 +159,15 @@ else:
 st.info(f"🕒 当前时间 {current_time}，{'允许打卡' if allow_time else '不在打卡时段内'}")
 
 # ================== 提交打卡 ==================
-if st.button("✅ 确认打卡", disabled=not (allow_time and in_factory and camera_image is not None)):
-    # 二次校验基本信息
+if st.button("✅ 确认打卡", disabled=not (allow_time and in_factory and camera_image is not None and has_location)):
     if not name or len(phone) != 11 or len(id_card) != 18:
         st.error("请完整填写姓名、11位手机号、18位身份证号")
     else:
-        # 处理照片：加水印、转bytes
         img = Image.open(camera_image)
-        img = add_watermark(img, name, user_lat, user_lon)
+        img = add_watermark(img, name, st.session_state.user_lat, st.session_state.user_lon)
         img_bytes = io.BytesIO()
         img.save(img_bytes, format="JPEG")
 
-        # 计算工时（仅签退时）
         work_h = ""
         if clock_type == "签退":
             mask = (st.session_state.daka_data["姓名"] == name) & \
@@ -178,9 +198,9 @@ if st.button("✅ 确认打卡", disabled=not (allow_time and in_factory and cam
 # ================== 个人当日记录查看 ==================
 st.divider()
 st.subheader("👤 我的今日记录")
-if st.button("查看我的记录", disabled=not (in_factory and name)):
+if st.button("查看我的记录", disabled=not (has_location and in_factory and name)):
     my_records = st.session_state.daka_data[
-        (st.session_state.daka_data["日期"] == today) & 
+        (st.session_state.daka_data["日期"] == today) &
         (st.session_state.daka_data["姓名"] == name)
     ]
     if my_records.empty:
