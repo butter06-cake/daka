@@ -4,7 +4,7 @@ from datetime import datetime
 import io
 from PIL import Image, ImageDraw
 import math
-import requests  # 用于反向地理编码（可选）
+from streamlit_geolocation import st_geolocation
 
 # ================== 配置参数 ==================
 FACTORY_LAT = 31.3040
@@ -29,64 +29,29 @@ if "user_lon" not in st.session_state:
 st.set_page_config(page_title="荣基打卡", layout="wide")
 st.title("🏭 荣基精密｜现场打卡")
 
-# ================== 自动定位（无法手动修改） ==================
+# ================== 自动定位（使用专业组件，用户不可手动修改） ==================
 st.subheader("📍 自动定位（系统获取，不可修改）")
 
 col1, col2 = st.columns(2)
 with col1:
-    # 只读显示纬度
     lat_display = st.text_input("纬度", value=str(st.session_state.user_lat) if st.session_state.user_lat else "未获取", disabled=True)
 with col2:
     lon_display = st.text_input("经度", value=str(st.session_state.user_lon) if st.session_state.user_lon else "未获取", disabled=True)
 
-# 定位按钮与逻辑
-if st.button("📡 获取当前位置", use_container_width=True):
-    # 注入JS获取定位，并通过URL参数回传
-    st.markdown("""
-        <script>
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(
-                (pos) => {
-                    const lat = pos.coords.latitude;
-                    const lon = pos.coords.longitude;
-                    // 将坐标附加到URL参数并刷新页面
-                    const url = new URL(window.location.href);
-                    url.searchParams.set('lat', lat.toFixed(6));
-                    url.searchParams.set('lon', lon.toFixed(6));
-                    window.location.href = url.toString();
-                },
-                (err) => {
-                    alert("定位失败：" + err.message + "\\n请检查位置权限");
-                }
-            );
-        } else {
-            alert("浏览器不支持地理定位");
-        }
-        </script>
-    """, unsafe_allow_html=True)
+# 定位组件（会自动处理权限请求和 HTTPS 要求）
+location = st_geolocation()
 
-# 从URL参数读取坐标（Streamlit 1.30+ 支持 st.query_params）
-try:
-    query_params = st.query_params
-    if "lat" in query_params and "lon" in query_params:
-        st.session_state.user_lat = float(query_params["lat"])
-        st.session_state.user_lon = float(query_params["lon"])
-        # 清除URL参数，避免重复读取
-        st.query_params.clear()
-        st.rerun()
-except AttributeError:
-    # 兼容旧版Streamlit，使用 st.experimental_get_query_params
-    pass
-
-# 坐标有效性判断
-has_location = st.session_state.user_lat is not None and st.session_state.user_lon is not None
-
-if has_location:
+if location and "latitude" in location:
+    st.session_state.user_lat = location["latitude"]
+    st.session_state.user_lon = location["longitude"]
     st.success(f"✅ 定位成功：纬度 {st.session_state.user_lat:.6f}，经度 {st.session_state.user_lon:.6f}")
 else:
-    st.warning("⚠️ 尚未获取位置，请点击上方按钮获取当前位置")
+    if st.session_state.user_lat is None:
+        st.warning("⚠️ 请点击地图上的「获取位置」按钮，并允许位置权限")
 
-# ================== 距离与厂区判断（仅当有坐标时计算） ==================
+has_location = st.session_state.user_lat is not None and st.session_state.user_lon is not None
+
+# ================== 距离与厂区判断 ==================
 def get_dist(lat1, lon1, lat2, lon2):
     R = 6371000
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
@@ -135,7 +100,7 @@ job = st.selectbox(
 )
 clock_type = st.radio("打卡类型", ["签到","签退"], horizontal=True, disabled=disabled)
 
-# ================== 强制现场拍照 ==================
+# ================== 强制现场拍照（只能当场拍摄） ==================
 st.subheader("📷 现场实时拍照（只能当场拍摄，禁止旧照片）")
 camera_image = st.camera_input("请拍摄人脸+厂区背景", disabled=disabled, label_visibility="collapsed")
 
