@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import io
 from PIL import Image, ImageDraw
 import math
@@ -27,6 +27,26 @@ if "location_verified" not in st.session_state:
 
 st.set_page_config(page_title="荣基打卡", layout="wide")
 st.title("🏭 荣基精密｜现场打卡")
+
+# ================== 获取北京时间 ==================
+def get_beijing_time():
+    """获取北京时间（UTC+8）"""
+    # 方法1：获取当前UTC时间，加上8小时
+    utc_now = datetime.now(timezone.utc)
+    beijing_now = utc_now.astimezone(timezone(timedelta(hours=8)))
+    return beijing_now
+
+# 或者更简单的方法（如果服务器本身就是北京时间，可以用下面这个）
+# from datetime import datetime
+# beijing_now = datetime.now()  # 如果服务器已是北京时间
+
+# 获取当前北京时间
+beijing_now = get_beijing_time()
+current_time = beijing_now.strftime("%H:%M")
+current_hour_min = beijing_now.strftime("%H:%M")
+today = beijing_now.strftime("%Y-%m-%d")
+current_hour = int(beijing_now.strftime("%H"))
+is_workday = beijing_now.weekday() < 5  # 周一=0，周五=4，周六=5，周日=6
 
 # ================== 定位UI ==================
 st.subheader("📍 位置验证")
@@ -151,27 +171,45 @@ st.subheader("📷 现场拍照")
 st.markdown("**必须当场拍摄，禁止使用相册旧照片**")
 camera_image = st.camera_input("请拍摄人脸+厂区背景", disabled=disabled, label_visibility="collapsed")
 
-# ================== 时间校验 ==================
-now = datetime.now()
-current_time = now.strftime("%H:%M")
-today = now.strftime("%Y-%m-%d")
-is_workday = now.weekday() < 5
+# ================== 时间校验（使用北京时间） ==================
+# 显示当前北京时间
+st.info(f"🕒 **当前北京时间：{current_time}**")
 
+# 判断打卡时间是否允许
 if clock_type == "签到":
-    allow_time = is_workday and SIGN_IN_START <= current_time <= SIGN_IN_END
+    # 将时间字符串转换为可比较的整数（分钟数）
+    def time_to_minutes(t):
+        h, m = map(int, t.split(':'))
+        return h * 60 + m
+    
+    current_minutes = time_to_minutes(current_time)
+    start_minutes = time_to_minutes(SIGN_IN_START)
+    end_minutes = time_to_minutes(SIGN_IN_END)
+    
+    allow_time = is_workday and start_minutes <= current_minutes <= end_minutes
+    
+    if not disabled and in_factory:
+        if allow_time:
+            st.success(f"✅ 签到时间：{SIGN_IN_START} - {SIGN_IN_END}，当前时间 {current_time}，可以签到")
+        else:
+            st.error(f"❌ 签到时间：{SIGN_IN_START} - {SIGN_IN_END}，当前时间 {current_time}，不在签到时间内")
 else:
-    allow_time = is_workday and SIGN_OUT_START <= current_time <= SIGN_OUT_END
-
-if not disabled and in_factory:
-    if allow_time:
-        st.success(f"🕒 当前时间 {current_time}，可以打卡")
-    else:
-        st.error(f"🕒 当前时间 {current_time}，不在打卡时间内")
+    current_minutes = time_to_minutes(current_time)
+    start_minutes = time_to_minutes(SIGN_OUT_START)
+    end_minutes = time_to_minutes(SIGN_OUT_END)
+    
+    allow_time = is_workday and start_minutes <= current_minutes <= end_minutes
+    
+    if not disabled and in_factory:
+        if allow_time:
+            st.success(f"✅ 签退时间：{SIGN_OUT_START} - {SIGN_OUT_END}，当前时间 {current_time}，可以签退")
+        else:
+            st.error(f"❌ 签退时间：{SIGN_OUT_START} - {SIGN_OUT_END}，当前时间 {current_time}，不在签退时间内")
 
 # ================== 水印函数 ==================
 def add_watermark(img, name, lat, lon):
     draw = ImageDraw.Draw(img)
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = get_beijing_time().strftime("%Y-%m-%d %H:%M:%S")
     draw.text((10, img.height - 40), f"{name}｜{now_str}｜{lat:.6f},{lon:.6f}", fill="red")
     return img
 
@@ -195,8 +233,9 @@ if st.button("✅ 确认打卡", disabled=submit_disabled):
                    (st.session_state.daka_data["日期"] == today) & \
                    (st.session_state.daka_data["打卡类型"] == "签到")
             if not st.session_state.daka_data.empty and mask.any():
-                t1 = pd.to_datetime(st.session_state.daka_data[mask].iloc[0]["打卡时间"], format="%H:%M")
-                t2 = pd.to_datetime(current_time, format="%H:%M")
+                t1_str = st.session_state.daka_data[mask].iloc[0]["打卡时间"]
+                t1 = datetime.strptime(t1_str, "%H:%M")
+                t2 = datetime.strptime(current_time, "%H:%M")
                 mins = int((t2 - t1).total_seconds() / 60)
                 work_h = f"{mins // 60}小时{mins % 60}分钟"
         
