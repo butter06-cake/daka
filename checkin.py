@@ -4,7 +4,6 @@ from datetime import datetime, timezone, timedelta
 import io
 from PIL import Image, ImageDraw
 import math
-import requests
 
 # ================== 配置参数 ==================
 FACTORY_LAT = 31.3040
@@ -36,21 +35,6 @@ def get_beijing_time():
     beijing_now = utc_now.astimezone(timezone(timedelta(hours=8)))
     return beijing_now
 
-# ================== IP自动定位 ==================
-def get_location_by_ip():
-    """通过IP获取地理位置（无需任何权限）"""
-    try:
-        response = requests.get('https://api.ipify.org?format=json', timeout=5)
-        ip = response.json()['ip']
-        geo_response = requests.get(f'http://ip-api.com/json/{ip}?fields=status,lat,lon,message', timeout=5)
-        data = geo_response.json()
-        if data.get('status') == 'success':
-            return data.get('lat'), data.get('lon')
-        else:
-            return None, None
-    except Exception as e:
-        return None, None
-
 # ================== 处理URL参数中的坐标 ==================
 query_params = st.query_params
 if "lat" in query_params and "lon" in query_params:
@@ -80,32 +64,19 @@ with col2:
         disabled=True  # 禁止修改
     )
 
-# 自动定位按钮
-col_btn1, col_btn2, col_btn3 = st.columns(3)
+# 厂区定位按钮
+col_btn1, col_btn2 = st.columns(2)
 
 with col_btn1:
-    if st.button("🌐 IP自动定位", use_container_width=True):
-        with st.spinner("正在获取位置..."):
-            lat, lon = get_location_by_ip()
-            if lat and lon:
-                st.session_state.user_lat = lat
-                st.session_state.user_lon = lon
-                st.session_state.location_verified = True
-                st.success(f"✅ 定位成功：{lat:.6f}, {lon:.6f}")
-                st.rerun()
-            else:
-                st.error("IP定位失败，请重试")
-
-with col_btn2:
-    if st.button("📍 使用厂区坐标", use_container_width=True):
+    if st.button("📍 使用厂区坐标定位", use_container_width=True):
         st.session_state.user_lat = FACTORY_LAT
         st.session_state.user_lon = FACTORY_LON
         st.session_state.location_verified = True
-        st.success(f"✅ 已设置为厂区坐标")
+        st.success(f"✅ 已设置为厂区坐标：{FACTORY_LAT}, {FACTORY_LON}")
         st.rerun()
 
-with col_btn3:
-    if st.button("🔄 重新定位", use_container_width=True):
+with col_btn2:
+    if st.button("🔄 重置定位", use_container_width=True):
         st.session_state.user_lat = None
         st.session_state.user_lon = None
         st.session_state.location_verified = False
@@ -115,7 +86,7 @@ with col_btn3:
 if st.session_state.location_verified:
     st.success(f"✅ 当前定位：纬度 {st.session_state.user_lat:.6f}，经度 {st.session_state.user_lon:.6f}")
 else:
-    st.info("💡 请点击上方按钮获取您的位置")
+    st.info("💡 请点击「使用厂区坐标定位」按钮获取位置")
 
 # ================== 距离计算与厂区判断 ==================
 def get_distance(lat1, lon1, lat2, lon2):
