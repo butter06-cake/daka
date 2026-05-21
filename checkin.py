@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 import io
 from PIL import Image, ImageDraw
 import math
+import requests
 
 # ================== 配置参数 ==================
 FACTORY_LAT = 31.3040
@@ -31,71 +32,90 @@ st.title("🏭 荣基精密｜现场打卡")
 # ================== 获取北京时间 ==================
 def get_beijing_time():
     """获取北京时间（UTC+8）"""
-    # 方法1：获取当前UTC时间，加上8小时
     utc_now = datetime.now(timezone.utc)
     beijing_now = utc_now.astimezone(timezone(timedelta(hours=8)))
     return beijing_now
 
-# 或者更简单的方法（如果服务器本身就是北京时间，可以用下面这个）
-# from datetime import datetime
-# beijing_now = datetime.now()  # 如果服务器已是北京时间
+# ================== IP自动定位 ==================
+def get_location_by_ip():
+    """通过IP获取地理位置（无需任何权限）"""
+    try:
+        response = requests.get('https://api.ipify.org?format=json', timeout=5)
+        ip = response.json()['ip']
+        geo_response = requests.get(f'http://ip-api.com/json/{ip}?fields=status,lat,lon,message', timeout=5)
+        data = geo_response.json()
+        if data.get('status') == 'success':
+            return data.get('lat'), data.get('lon')
+        else:
+            return None, None
+    except Exception as e:
+        return None, None
 
-# 获取当前北京时间
-beijing_now = get_beijing_time()
-current_time = beijing_now.strftime("%H:%M")
-current_hour_min = beijing_now.strftime("%H:%M")
-today = beijing_now.strftime("%Y-%m-%d")
-current_hour = int(beijing_now.strftime("%H"))
-is_workday = beijing_now.weekday() < 5  # 周一=0，周五=4，周六=5，周日=6
+# ================== 处理URL参数中的坐标 ==================
+query_params = st.query_params
+if "lat" in query_params and "lon" in query_params:
+    try:
+        st.session_state.user_lat = float(query_params["lat"])
+        st.session_state.user_lon = float(query_params["lon"])
+        st.session_state.location_verified = True
+        st.query_params.clear()
+        st.rerun()
+    except:
+        pass
 
-# ================== 定位UI ==================
+# ================== 定位UI（只读，不可修改） ==================
 st.subheader("📍 位置验证")
 
 col1, col2 = st.columns(2)
 with col1:
-    lat_input = st.number_input(
+    lat_display = st.text_input(
         "纬度", 
-        value=float(st.session_state.user_lat) if st.session_state.user_lat else FACTORY_LAT,
-        format="%.6f",
-        step=0.000001,
-        key="lat_input"
+        value=f"{st.session_state.user_lat:.6f}" if st.session_state.user_lat else "未获取",
+        disabled=True  # 禁止修改
     )
 with col2:
-    lon_input = st.number_input(
+    lon_display = st.text_input(
         "经度", 
-        value=float(st.session_state.user_lon) if st.session_state.user_lon else FACTORY_LON,
-        format="%.6f",
-        step=0.000001,
-        key="lon_input"
+        value=f"{st.session_state.user_lon:.6f}" if st.session_state.user_lon else "未获取",
+        disabled=True  # 禁止修改
     )
 
-# 两个按钮
-col_btn1, col_btn2 = st.columns(2)
+# 自动定位按钮
+col_btn1, col_btn2, col_btn3 = st.columns(3)
 
 with col_btn1:
+    if st.button("🌐 IP自动定位", use_container_width=True):
+        with st.spinner("正在获取位置..."):
+            lat, lon = get_location_by_ip()
+            if lat and lon:
+                st.session_state.user_lat = lat
+                st.session_state.user_lon = lon
+                st.session_state.location_verified = True
+                st.success(f"✅ 定位成功：{lat:.6f}, {lon:.6f}")
+                st.rerun()
+            else:
+                st.error("IP定位失败，请重试")
+
+with col_btn2:
     if st.button("📍 使用厂区坐标", use_container_width=True):
         st.session_state.user_lat = FACTORY_LAT
         st.session_state.user_lon = FACTORY_LON
         st.session_state.location_verified = True
-        st.success(f"✅ 已设置为厂区坐标：{FACTORY_LAT}, {FACTORY_LON}")
+        st.success(f"✅ 已设置为厂区坐标")
         st.rerun()
 
-with col_btn2:
-    if st.button("✅ 确认使用当前坐标", use_container_width=True):
-        if lat_input and lon_input:
-            st.session_state.user_lat = lat_input
-            st.session_state.user_lon = lon_input
-            st.session_state.location_verified = True
-            st.success(f"✅ 已确认坐标：{lat_input:.6f}, {lon_input:.6f}")
-            st.rerun()
-        else:
-            st.error("请先输入坐标")
+with col_btn3:
+    if st.button("🔄 重新定位", use_container_width=True):
+        st.session_state.user_lat = None
+        st.session_state.user_lon = None
+        st.session_state.location_verified = False
+        st.rerun()
 
 # 显示当前定位状态
 if st.session_state.location_verified:
     st.success(f"✅ 当前定位：纬度 {st.session_state.user_lat:.6f}，经度 {st.session_state.user_lon:.6f}")
 else:
-    st.info("💡 请点击「使用厂区坐标」按钮，或手动输入坐标后点击「确认使用当前坐标」")
+    st.info("💡 请点击上方按钮获取您的位置")
 
 # ================== 距离计算与厂区判断 ==================
 def get_distance(lat1, lon1, lat2, lon2):
@@ -121,7 +141,6 @@ if st.session_state.location_verified:
         disabled = False
     else:
         st.error(f"❌ 不在厂区｜距离厂区 {distance:.0f} 米（需在 {ALLOW_RADIUS} 米内）")
-        st.warning("💡 点击「使用厂区坐标」按钮")
         disabled = True
 else:
     in_factory = False
@@ -171,40 +190,32 @@ st.subheader("📷 现场拍照")
 st.markdown("**必须当场拍摄，禁止使用相册旧照片**")
 camera_image = st.camera_input("请拍摄人脸+厂区背景", disabled=disabled, label_visibility="collapsed")
 
-# ================== 时间校验（使用北京时间） ==================
-# 显示当前北京时间
-st.info(f"🕒 **当前北京时间：{current_time}**")
+# ================== 时间校验 ==================
+beijing_now = get_beijing_time()
+current_time = beijing_now.strftime("%H:%M")
+today = beijing_now.strftime("%Y-%m-%d")
+is_workday = beijing_now.weekday() < 5
 
-# 判断打卡时间是否允许
+def time_to_minutes(t):
+    h, m = map(int, t.split(':'))
+    return h * 60 + m
+
+current_minutes = time_to_minutes(current_time)
+
 if clock_type == "签到":
-    # 将时间字符串转换为可比较的整数（分钟数）
-    def time_to_minutes(t):
-        h, m = map(int, t.split(':'))
-        return h * 60 + m
-    
-    current_minutes = time_to_minutes(current_time)
-    start_minutes = time_to_minutes(SIGN_IN_START)
-    end_minutes = time_to_minutes(SIGN_IN_END)
-    
-    allow_time = is_workday and start_minutes <= current_minutes <= end_minutes
-    
-    if not disabled and in_factory:
-        if allow_time:
-            st.success(f"✅ 签到时间：{SIGN_IN_START} - {SIGN_IN_END}，当前时间 {current_time}，可以签到")
-        else:
-            st.error(f"❌ 签到时间：{SIGN_IN_START} - {SIGN_IN_END}，当前时间 {current_time}，不在签到时间内")
+    allow_time = is_workday and time_to_minutes(SIGN_IN_START) <= current_minutes <= time_to_minutes(SIGN_IN_END)
+    time_msg = f"签到时间：{SIGN_IN_START} - {SIGN_IN_END}"
 else:
-    current_minutes = time_to_minutes(current_time)
-    start_minutes = time_to_minutes(SIGN_OUT_START)
-    end_minutes = time_to_minutes(SIGN_OUT_END)
-    
-    allow_time = is_workday and start_minutes <= current_minutes <= end_minutes
-    
-    if not disabled and in_factory:
-        if allow_time:
-            st.success(f"✅ 签退时间：{SIGN_OUT_START} - {SIGN_OUT_END}，当前时间 {current_time}，可以签退")
-        else:
-            st.error(f"❌ 签退时间：{SIGN_OUT_START} - {SIGN_OUT_END}，当前时间 {current_time}，不在签退时间内")
+    allow_time = is_workday and time_to_minutes(SIGN_OUT_START) <= current_minutes <= time_to_minutes(SIGN_OUT_END)
+    time_msg = f"签退时间：{SIGN_OUT_START} - {SIGN_OUT_END}"
+
+st.info(f"🕒 **当前北京时间：{current_time}** | {time_msg}")
+
+if not disabled and in_factory:
+    if allow_time:
+        st.success("✅ 当前时间允许打卡")
+    else:
+        st.error("❌ 当前时间不在打卡时段内")
 
 # ================== 水印函数 ==================
 def add_watermark(img, name, lat, lon):
@@ -220,13 +231,11 @@ if st.button("✅ 确认打卡", disabled=submit_disabled):
     if not name or len(phone) != 11 or len(id_card) != 18:
         st.error("请完整填写姓名、11位手机号和18位身份证号")
     else:
-        # 处理照片
         img = Image.open(camera_image)
         img = add_watermark(img, name, st.session_state.user_lat, st.session_state.user_lon)
         img_bytes = io.BytesIO()
         img.save(img_bytes, format="JPEG")
         
-        # 计算工时
         work_h = ""
         if clock_type == "签退":
             mask = (st.session_state.daka_data["姓名"] == name) & \
@@ -239,7 +248,6 @@ if st.button("✅ 确认打卡", disabled=submit_disabled):
                 mins = int((t2 - t1).total_seconds() / 60)
                 work_h = f"{mins // 60}小时{mins % 60}分钟"
         
-        # 保存记录
         new_row = pd.DataFrame([{
             "日期": today,
             "打卡时间": current_time,
