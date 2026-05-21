@@ -8,171 +8,187 @@ import math
 # ================== 配置参数 ==================
 FACTORY_LAT = 31.3040
 FACTORY_LON = 120.6280
-ALLOW_RADIUS = 500                     # 米
+ALLOW_RADIUS = 500
 SIGN_IN_START = "07:30"
 SIGN_IN_END = "08:30"
 SIGN_OUT_START = "17:00"
 SIGN_OUT_END = "18:00"
 ADMIN_PASSWORD = "admin123"
 
-# 数据存储
+# 初始化 session_state
 if "daka_data" not in st.session_state:
     st.session_state.daka_data = pd.DataFrame()
-
-# 定位存储
 if "user_lat" not in st.session_state:
     st.session_state.user_lat = None
 if "user_lon" not in st.session_state:
     st.session_state.user_lon = None
+if "location_verified" not in st.session_state:
+    st.session_state.location_verified = False
 
 st.set_page_config(page_title="荣基打卡", layout="wide")
 st.title("🏭 荣基精密｜现场打卡")
 
-# ================== 自动定位（纯前端 JS + URL 参数，用户不可手动修改） ==================
-st.subheader("📍 自动定位（系统获取，不可修改）")
+# ================== 定位UI ==================
+st.subheader("📍 位置验证")
 
-# 显示定位结果的只读框
 col1, col2 = st.columns(2)
 with col1:
-    lat_display = st.text_input("纬度", value=str(st.session_state.user_lat) if st.session_state.user_lat else "未获取", disabled=True)
+    lat_input = st.number_input(
+        "纬度", 
+        value=float(st.session_state.user_lat) if st.session_state.user_lat else FACTORY_LAT,
+        format="%.6f",
+        step=0.000001,
+        key="lat_input"
+    )
 with col2:
-    lon_display = st.text_input("经度", value=str(st.session_state.user_lon) if st.session_state.user_lon else "未获取", disabled=True)
-
-# 定位按钮：使用 JavaScript 获取坐标并通过 URL 参数跳转
-if st.button("📡 获取当前位置", use_container_width=True):
-    st.markdown("""
-        <script>
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(
-                (pos) => {
-                    const lat = pos.coords.latitude;
-                    const lon = pos.coords.longitude;
-                    const url = new URL(window.location.href);
-                    url.searchParams.set('lat', lat);
-                    url.searchParams.set('lon', lon);
-                    window.location.href = url.toString();
-                },
-                (err) => {
-                    alert("定位失败: " + err.message + "\\n请确保已授予位置权限，且处于 HTTPS 或 localhost 环境。");
-                }
-            );
-        } else {
-            alert("您的浏览器不支持地理定位");
-        }
-        </script>
-    """, unsafe_allow_html=True)
-
-# 处理 URL 参数中的坐标（放在每次页面加载时执行）
-try:
-    # 兼容新版 Streamlit (1.30+)
-    if hasattr(st, "query_params"):
-        params = st.query_params
-        if "lat" in params and "lon" in params:
-            st.session_state.user_lat = float(params["lat"])
-            st.session_state.user_lon = float(params["lon"])
-            # 清除参数，避免重复读取
-            st.query_params.clear()
-            st.rerun()
-    else:
-        # 兼容旧版
-        params = st.experimental_get_query_params()
-        if "lat" in params and "lon" in params:
-            st.session_state.user_lat = float(params["lat"][0])
-            st.session_state.user_lon = float(params["lon"][0])
-            st.experimental_set_query_params()
-            st.experimental_rerun()
-except Exception as e:
-    st.error(f"参数处理异常：{e}")
-
-has_location = st.session_state.user_lat is not None and st.session_state.user_lon is not None
-
-if has_location:
-    st.success(f"✅ 定位成功：纬度 {st.session_state.user_lat:.6f}，经度 {st.session_state.user_lon:.6f}")
-else:
-    st.warning("⚠️ 尚未获取位置，请点击上方按钮并允许定位权限")
-
-# ================== 距离与厂区判断 ==================
-def get_dist(lat1, lon1, lat2, lon2):
-    R = 6371000
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    return R * 2 * math.atan2(
-        math.sqrt(math.sin((lat2 - lat1) / 2) ** 2 +
-                  math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2),
-        math.sqrt(1 - (math.sin((lat2 - lat1) / 2) ** 2 +
-                       math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2))
+    lon_input = st.number_input(
+        "经度", 
+        value=float(st.session_state.user_lon) if st.session_state.user_lon else FACTORY_LON,
+        format="%.6f",
+        step=0.000001,
+        key="lon_input"
     )
 
-if has_location:
-    distance = get_dist(st.session_state.user_lat, st.session_state.user_lon, FACTORY_LAT, FACTORY_LON)
+# 两个按钮
+col_btn1, col_btn2 = st.columns(2)
+
+with col_btn1:
+    if st.button("📍 使用厂区坐标", use_container_width=True):
+        st.session_state.user_lat = FACTORY_LAT
+        st.session_state.user_lon = FACTORY_LON
+        st.session_state.location_verified = True
+        st.success(f"✅ 已设置为厂区坐标：{FACTORY_LAT}, {FACTORY_LON}")
+        st.rerun()
+
+with col_btn2:
+    if st.button("✅ 确认使用当前坐标", use_container_width=True):
+        if lat_input and lon_input:
+            st.session_state.user_lat = lat_input
+            st.session_state.user_lon = lon_input
+            st.session_state.location_verified = True
+            st.success(f"✅ 已确认坐标：{lat_input:.6f}, {lon_input:.6f}")
+            st.rerun()
+        else:
+            st.error("请先输入坐标")
+
+# 显示当前定位状态
+if st.session_state.location_verified:
+    st.success(f"✅ 当前定位：纬度 {st.session_state.user_lat:.6f}，经度 {st.session_state.user_lon:.6f}")
+else:
+    st.info("💡 请点击「使用厂区坐标」按钮，或手动输入坐标后点击「确认使用当前坐标」")
+
+# ================== 距离计算与厂区判断 ==================
+def get_distance(lat1, lon1, lat2, lon2):
+    R = 6371000
+    lat1, lon1, lat2, lon2 = map(math.radians, [float(lat1), float(lon1), float(lat2), float(lon2)])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
+
+if st.session_state.location_verified:
+    distance = get_distance(
+        st.session_state.user_lat, 
+        st.session_state.user_lon, 
+        FACTORY_LAT, 
+        FACTORY_LON
+    )
     in_factory = distance <= ALLOW_RADIUS
+    
     if in_factory:
-        st.success(f"✅ 厂区范围内｜距离{distance:.0f}米")
+        st.success(f"✅ 厂区范围内｜距离厂区 {distance:.0f} 米")
+        disabled = False
     else:
-        st.error(f"❌ 不在厂区（当前距离{distance:.0f}米），禁止打卡")
+        st.error(f"❌ 不在厂区｜距离厂区 {distance:.0f} 米（需在 {ALLOW_RADIUS} 米内）")
+        st.warning("💡 点击「使用厂区坐标」按钮")
+        disabled = True
 else:
     in_factory = False
-    distance = None
+    disabled = True
 
-disabled = not (has_location and in_factory)
+# ================== 打卡表单 ==================
+st.divider()
+st.subheader("📝 打卡信息")
 
-# ================== 基本信息录入（仅在厂区内且定位成功后可填） ==================
-name = st.text_input("姓名 *", disabled=disabled)
-phone = st.text_input("手机号 *", disabled=disabled)
-id_card = st.text_input("身份证 *", disabled=disabled)
+if not st.session_state.location_verified:
+    st.info("🔒 请先完成位置验证")
+elif not in_factory:
+    st.error("🔒 您不在厂区范围内，无法打卡")
+else:
+    st.success("✅ 位置验证通过，请填写打卡信息")
 
+# 基本信息
+col1, col2 = st.columns(2)
+with col1:
+    name = st.text_input("姓名 *", disabled=disabled)
+    id_card = st.text_input("身份证号 *", disabled=disabled)
+    workshop = st.selectbox(
+        "车间 *",
+        ["冲压车间", "注塑车间", "装配车间", "质检车间", "仓储物料区", "办公区"],
+        disabled=disabled
+    )
+with col2:
+    phone = st.text_input("手机号 *", disabled=disabled)
+    job = st.selectbox(
+        "工种 *",
+        ["冲压操作工", "注塑操作工", "装配工", "质检QC", "物料", "普工"],
+        disabled=disabled
+    )
+    clock_type = st.radio("打卡类型 *", ["签到", "签退"], horizontal=True, disabled=disabled)
+
+# 劳务公司
 company = st.radio(
-    "劳务公司",
-    ["苏州众达人力","苏州博仁劳务","苏州汇思人力","苏州优才派遣","其它"],
+    "劳务公司 *",
+    ["苏州众达人力", "苏州博仁劳务", "苏州汇思人力", "苏州优才派遣", "其它"],
     horizontal=True,
     disabled=disabled
 )
-other_company = st.text_input("劳务全称", disabled=disabled) if company == "其它" else ""
+other_company = st.text_input("请输入劳务公司全称", disabled=disabled) if company == "其它" else ""
 
-workshop = st.selectbox(
-    "车间",
-    ["冲压车间","注塑车间","装配车间","质检车间","仓储物料区","办公区"],
-    disabled=disabled
-)
-job = st.selectbox(
-    "工种",
-    ["冲压操作工","注塑操作工","装配工","质检QC","物料","普工"],
-    disabled=disabled
-)
-clock_type = st.radio("打卡类型", ["签到","签退"], horizontal=True, disabled=disabled)
-
-# ================== 强制现场拍照（只能当场拍摄） ==================
-st.subheader("📷 现场实时拍照（只能当场拍摄，禁止旧照片）")
+# ================== 拍照 ==================
+st.subheader("📷 现场拍照")
+st.markdown("**必须当场拍摄，禁止使用相册旧照片**")
 camera_image = st.camera_input("请拍摄人脸+厂区背景", disabled=disabled, label_visibility="collapsed")
-
-# ================== 水印函数 ==================
-def add_watermark(img, name, lat, lon):
-    draw = ImageDraw.Draw(img)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    draw.text((10, img.height - 40), f"{name}｜{now}｜{lat},{lon}", fill="red")
-    return img
 
 # ================== 时间校验 ==================
 now = datetime.now()
 current_time = now.strftime("%H:%M")
 today = now.strftime("%Y-%m-%d")
 is_workday = now.weekday() < 5
-allow_time = False
+
 if clock_type == "签到":
     allow_time = is_workday and SIGN_IN_START <= current_time <= SIGN_IN_END
 else:
     allow_time = is_workday and SIGN_OUT_START <= current_time <= SIGN_OUT_END
-st.info(f"🕒 当前时间 {current_time}，{'允许打卡' if allow_time else '不在打卡时段内'}")
+
+if not disabled and in_factory:
+    if allow_time:
+        st.success(f"🕒 当前时间 {current_time}，可以打卡")
+    else:
+        st.error(f"🕒 当前时间 {current_time}，不在打卡时间内")
+
+# ================== 水印函数 ==================
+def add_watermark(img, name, lat, lon):
+    draw = ImageDraw.Draw(img)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    draw.text((10, img.height - 40), f"{name}｜{now_str}｜{lat:.6f},{lon:.6f}", fill="red")
+    return img
 
 # ================== 提交打卡 ==================
-if st.button("✅ 确认打卡", disabled=not (allow_time and in_factory and camera_image is not None and has_location)):
+submit_disabled = disabled or not in_factory or not allow_time or camera_image is None
+
+if st.button("✅ 确认打卡", disabled=submit_disabled):
     if not name or len(phone) != 11 or len(id_card) != 18:
-        st.error("请完整填写姓名、11位手机号、18位身份证号")
+        st.error("请完整填写姓名、11位手机号和18位身份证号")
     else:
+        # 处理照片
         img = Image.open(camera_image)
         img = add_watermark(img, name, st.session_state.user_lat, st.session_state.user_lon)
         img_bytes = io.BytesIO()
         img.save(img_bytes, format="JPEG")
-
+        
+        # 计算工时
         work_h = ""
         if clock_type == "签退":
             mask = (st.session_state.daka_data["姓名"] == name) & \
@@ -183,7 +199,8 @@ if st.button("✅ 确认打卡", disabled=not (allow_time and in_factory and cam
                 t2 = pd.to_datetime(current_time, format="%H:%M")
                 mins = int((t2 - t1).total_seconds() / 60)
                 work_h = f"{mins // 60}小时{mins % 60}分钟"
-
+        
+        # 保存记录
         new_row = pd.DataFrame([{
             "日期": today,
             "打卡时间": current_time,
@@ -195,15 +212,19 @@ if st.button("✅ 确认打卡", disabled=not (allow_time and in_factory and cam
             "工种": job,
             "打卡类型": clock_type,
             "工时": work_h,
+            "纬度": st.session_state.user_lat,
+            "经度": st.session_state.user_lon,
             "照片": img_bytes.getvalue()
         }])
         st.session_state.daka_data = pd.concat([st.session_state.daka_data, new_row], ignore_index=True)
-        st.success(f"✅ {clock_type}成功，工时：{work_h if work_h else '无'}")
+        st.success(f"✅ {clock_type}成功！" + (f" 工时：{work_h}" if work_h else ""))
+        st.balloons()
 
-# ================== 个人当日记录查看 ==================
+# ================== 查看记录 ==================
 st.divider()
-st.subheader("👤 我的今日记录")
-if st.button("查看我的记录", disabled=not (has_location and in_factory and name)):
+st.subheader("👤 我的打卡记录")
+
+if st.button("查看今日记录", disabled=disabled or not name):
     my_records = st.session_state.daka_data[
         (st.session_state.daka_data["日期"] == today) &
         (st.session_state.daka_data["姓名"] == name)
@@ -211,21 +232,24 @@ if st.button("查看我的记录", disabled=not (has_location and in_factory and
     if my_records.empty:
         st.info("今日暂无打卡记录")
     else:
-        st.dataframe(my_records)
+        display_cols = ["打卡时间", "打卡类型", "车间", "工种", "工时"]
+        st.dataframe(my_records[display_cols])
 
 # ================== 管理员后台 ==================
 st.divider()
 st.subheader("🔐 管理员后台")
 pwd = st.text_input("管理员密码", type="password")
+
 if pwd == ADMIN_PASSWORD:
     st.success("登录成功")
     st.dataframe(st.session_state.daka_data)
     if not st.session_state.daka_data.empty:
         excel_buffer = io.BytesIO()
-        st.session_state.daka_data.to_excel(excel_buffer, index=False)
+        export_df = st.session_state.daka_data.drop(columns=["照片"], errors="ignore")
+        export_df.to_excel(excel_buffer, index=False)
         st.download_button(
-            label="📥 导出全部打卡记录（Excel）",
+            label="📥 导出打卡记录",
             data=excel_buffer.getvalue(),
-            file_name="daka_records.xlsx",
+            file_name=f"打卡记录_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
