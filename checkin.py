@@ -118,6 +118,25 @@ def normalize_worker_id(worker_id):
                 return extracted_id
     return None
 
+# ================== 人脸检测函数 ==================
+def detect_face(image):
+    try:
+        import cv2
+        import numpy as np
+        
+        img = np.array(image.convert('RGB'))
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        face_cascade = cv2.CascadeClassifier(cascade_path)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
+        return len(faces) > 0, len(faces)
+    except ImportError:
+        return None, 0
+    except Exception:
+        return None, 0
+
 # ================== 数据持久化函数 ==================
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -152,10 +171,8 @@ if "selected_worker_id" not in st.session_state:
     st.session_state.selected_worker_id = None
 if "temp_info" not in st.session_state:
     st.session_state.temp_info = {}
-if "photo_taken" not in st.session_state:
-    st.session_state.photo_taken = False
-if "last_clock" not in st.session_state:
-    st.session_state.last_clock = None
+if "current_worker_name" not in st.session_state:
+    st.session_state.current_worker_name = None
 
 st.set_page_config(page_title="荣基打卡", layout="wide", initial_sidebar_state="collapsed")
 st.title("🏭 荣基精密｜现场打卡系统")
@@ -183,7 +200,20 @@ def add_watermark(img, name, lat, lon):
     draw.text((10, img.height - 40), f"{name}｜{now_str}｜{lat:.6f},{lon:.6f}", fill="red")
     return img
 
-# ================== 定位UI（使用expander减少重绘） ==================
+# ================== 获取当前时间 ==================
+beijing_now = get_beijing_time()
+current_time = beijing_now.strftime("%H:%M")
+today = beijing_now.strftime("%Y-%m-%d")
+is_workday = beijing_now.weekday() < 5
+current_minutes = time_to_minutes(current_time)
+
+# 定义签到签退时间范围
+SIGN_IN_START_MIN = time_to_minutes(SIGN_IN_START)
+SIGN_IN_END_MIN = time_to_minutes(SIGN_IN_END)
+SIGN_OUT_START_MIN = time_to_minutes(SIGN_OUT_START)
+SIGN_OUT_END_MIN = time_to_minutes(SIGN_OUT_END)
+
+# ================== 定位UI ==================
 with st.expander("📍 位置验证", expanded=not st.session_state.location_verified):
     col1, col2 = st.columns(2)
     with col1:
@@ -205,6 +235,7 @@ with st.expander("📍 位置验证", expanded=not st.session_state.location_ver
             st.session_state.location_verified = False
             st.rerun()
 
+# 厂区判断
 if st.session_state.location_verified:
     distance = get_distance(st.session_state.user_lat, st.session_state.user_lon, FACTORY_LAT, FACTORY_LON)
     in_factory = distance <= ALLOW_RADIUS
@@ -218,6 +249,9 @@ else:
     in_factory = False
     disabled = True
 
+# 显示当前时间
+st.info(f"🕒 当前时间：{current_time} | {'工作日' if is_workday else '周末'}")
+
 # ================== 员工类型选择 ==================
 if not disabled:
     col_type1, col_type2 = st.columns(2)
@@ -226,12 +260,15 @@ if not disabled:
             st.session_state.worker_type = "formal"
             st.session_state.formal_worker_info = None
             st.session_state.selected_worker_id = None
+            st.session_state.current_worker_name = None
             st.rerun()
     with col_type2:
         if st.button("📝 临时工", use_container_width=True):
             st.session_state.worker_type = "temporary"
             st.session_state.formal_worker_info = None
             st.session_state.selected_worker_id = None
+            st.session_state.temp_info = {}
+            st.session_state.current_worker_name = None
             st.rerun()
 
 # ================== 正式工 ==================
@@ -245,6 +282,7 @@ if st.session_state.worker_type == "formal" and not disabled:
         if normalized_id and normalized_id in FORMAL_WORKERS:
             st.session_state.formal_worker_info = FORMAL_WORKERS[normalized_id]
             st.session_state.selected_worker_id = normalized_id
+            st.session_state.current_worker_name = FORMAL_WORKERS[normalized_id]['name']
             formal_verified = True
             st.success(f"✅ {FORMAL_WORKERS[normalized_id]['name']}")
             st.rerun()
@@ -254,6 +292,7 @@ if st.session_state.worker_type == "formal" and not disabled:
     if st.session_state.formal_worker_info:
         info = st.session_state.formal_worker_info
         formal_verified = True
+        st.session_state.current_worker_name = info['name']
         st.info(f"员工：{info['name']}｜{info['department']}")
 
 # ================== 临时工 ==================
@@ -276,131 +315,170 @@ if st.session_state.worker_type == "temporary" and not disabled:
         "workshop": temp_workshop, "job": "临时工",
         "company": temp_other if temp_company == "其它" else temp_company,
     }
+    if temp_name:
+        st.session_state.current_worker_name = temp_name
 
 # ================== 拍照和打卡 ==================
 st.divider()
 st.subheader("📷 拍照打卡")
 
-# 拍照组件（放在单独一行，减少重绘）
 camera_col, info_col = st.columns([2, 1])
 with camera_col:
     camera_image = st.camera_input("请拍摄人脸+厂区背景", disabled=disabled or not in_factory, key="camera")
 
 with info_col:
-    st.caption("⚠️ 必须当场拍摄")
+    st.caption("⚠️ 必须当场拍摄清晰人脸")
     if camera_image:
-        st.session_state.photo_taken = True
         st.success("✅ 已拍照")
+        img = Image.open(camera_image)
+        has_face, face_count = detect_face(img)
+        if has_face is True:
+            if has_face:
+                st.success(f"✅ 检测到人脸 ({face_count}张)")
+            else:
+                st.error("❌ 未检测到人脸，请重新拍摄")
     else:
-        st.session_state.photo_taken = False
         st.warning("未拍照")
 
-# 打卡按钮
-st.divider()
+# ================== 打卡按钮 ==================
 col_clock1, col_clock2 = st.columns(2)
-clock_in = col_clock1.button("✅ 签到", use_container_width=True, 
-                              disabled=disabled or not in_factory or not camera_image)
-clock_out = col_clock2.button("🔚 签退", use_container_width=True,
-                               disabled=disabled or not in_factory or not camera_image)
 
-# ================== 时间校验 ==================
-beijing_now = get_beijing_time()
-current_time = beijing_now.strftime("%H:%M")
-today = beijing_now.strftime("%Y-%m-%d")
-is_workday = beijing_now.weekday() < 5
-current_minutes = time_to_minutes(current_time)
+# 基础打卡条件
+base_clock_ok = camera_image is not None and in_factory and st.session_state.location_verified
 
+# 签到按钮
+sign_in_ok = base_clock_ok and is_workday and (SIGN_IN_START_MIN <= current_minutes <= SIGN_IN_END_MIN)
+clock_in = col_clock1.button("✅ 签到", use_container_width=True, disabled=not sign_in_ok)
+
+# 签退按钮
+sign_out_ok = base_clock_ok and is_workday and (SIGN_OUT_START_MIN <= current_minutes <= SIGN_OUT_END_MIN)
+clock_out = col_clock2.button("🔚 签退", use_container_width=True, disabled=not sign_out_ok)
+
+# 显示时间状态提示
+if not disabled and in_factory:
+    if current_minutes < SIGN_IN_START_MIN:
+        st.info(f"⏰ 签到将于 {SIGN_IN_START} 开始")
+    elif SIGN_IN_END_MIN < current_minutes < SIGN_OUT_START_MIN:
+        st.info(f"⏰ 签退将于 {SIGN_OUT_START} 开始")
+    elif current_minutes > SIGN_OUT_END_MIN:
+        st.warning("⚠️ 今日打卡时间已结束")
+    elif not is_workday:
+        st.warning("⚠️ 周末无需打卡")
+
+# ================== 提交打卡 ==================
+# 确定用户点击了哪个按钮
 clock_type = None
 if clock_in:
     clock_type = "签到"
 elif clock_out:
     clock_type = "签退"
 
-if clock_type == "签到":
-    allow_time = is_workday and time_to_minutes(SIGN_IN_START) <= current_minutes <= time_to_minutes(SIGN_IN_END)
-else:
-    allow_time = is_workday and time_to_minutes(SIGN_OUT_START) <= current_minutes <= time_to_minutes(SIGN_OUT_END)
-
-st.info(f"🕒 {current_time} | {'✅可打卡' if allow_time else '❌不在打卡时间'}")
-
-# ================== 提交打卡 ==================
-if clock_type and camera_image and allow_time and in_factory:
-    # 获取员工信息
-    worker_name = None
-    if st.session_state.worker_type == "formal" and st.session_state.formal_worker_info:
-        info = st.session_state.formal_worker_info
-        worker_name = info['name']
-        worker_phone = info['phone']
-        worker_id = "正式工"
-        worker_company = f"正式工-{info['department']}"
-        worker_workshop = info['sub_dept']
-        worker_job = "正式员工"
-    elif st.session_state.worker_type == "temporary" and st.session_state.temp_info.get("name"):
-        t = st.session_state.temp_info
-        if len(t.get("phone", "")) == 11 and len(t.get("id_card", "")) == 18:
-            worker_name = t["name"]
-            worker_phone = t["phone"]
-            worker_id = t["id_card"]
-            worker_company = t["company"]
-            worker_workshop = t["workshop"]
-            worker_job = t["job"]
-        else:
-            st.error("请完整填写信息")
+if clock_type and camera_image and in_factory and st.session_state.location_verified:
+    # 时间校验
+    if clock_type == "签到":
+        if not (SIGN_IN_START_MIN <= current_minutes <= SIGN_IN_END_MIN):
+            st.error(f"❌ 签到时间：{SIGN_IN_START} - {SIGN_IN_END}")
+            st.stop()
+    else:
+        if not (SIGN_OUT_START_MIN <= current_minutes <= SIGN_OUT_END_MIN):
+            st.error(f"❌ 签退时间：{SIGN_OUT_START} - {SIGN_OUT_END}")
+            st.stop()
     
-    if worker_name:
-        img = Image.open(camera_image)
-        img = add_watermark(img, worker_name, st.session_state.user_lat, st.session_state.user_lon)
-        img_bytes = io.BytesIO()
-        img.save(img_bytes, format="JPEG")
+    # 人脸检测验证
+    img_check = Image.open(camera_image)
+    has_face, face_count = detect_face(img_check)
+    
+    if has_face is False:
+        st.error("❌ 照片中未检测到人脸，请重新拍摄清晰正面照片后再打卡")
+    else:
+        # 获取员工信息
+        worker_name = None
+        if st.session_state.worker_type == "formal" and st.session_state.formal_worker_info:
+            info = st.session_state.formal_worker_info
+            worker_name = info['name']
+            worker_phone = info['phone']
+            worker_id = "正式工"
+            worker_company = f"正式工-{info['department']}"
+            worker_workshop = info['sub_dept']
+            worker_job = "正式员工"
+        elif st.session_state.worker_type == "temporary" and st.session_state.temp_info.get("name"):
+            t = st.session_state.temp_info
+            if len(t.get("phone", "")) == 11 and len(t.get("id_card", "")) == 18:
+                worker_name = t["name"]
+                worker_phone = t["phone"]
+                worker_id = t["id_card"]
+                worker_company = t["company"]
+                worker_workshop = t["workshop"]
+                worker_job = t["job"]
+            else:
+                st.error("请完整填写临时工信息（11位手机号、18位身份证号）")
         
-        # 计算工时
-        work_h = ""
-        if clock_type == "签退" and not st.session_state.daka_data.empty:
-            mask = (st.session_state.daka_data["姓名"] == worker_name) & \
-                   (st.session_state.daka_data["日期"] == today) & \
-                   (st.session_state.daka_data["打卡类型"] == "签到")
-            if mask.any():
-                t1 = datetime.strptime(st.session_state.daka_data[mask].iloc[0]["打卡时间"], "%H:%M")
-                t2 = datetime.strptime(current_time, "%H:%M")
-                mins = int((t2 - t1).total_seconds() / 60)
-                work_h = f"{mins // 60}h{mins % 60}m"
-        
-        new_row = pd.DataFrame([{
-            "日期": today, "打卡时间": current_time, "姓名": worker_name,
-            "手机号": worker_phone, "身份证": worker_id, "劳务公司": worker_company,
-            "车间": worker_workshop, "工种": worker_job, "打卡类型": clock_type,
-            "工时": work_h, "纬度": st.session_state.user_lat, "经度": st.session_state.user_lon,
-            "照片": img_bytes.getvalue()
-        }])
-        st.session_state.daka_data = pd.concat([st.session_state.daka_data, new_row], ignore_index=True)
-        save_data(st.session_state.daka_data)
-        st.success(f"✅ {clock_type}成功！{worker_name}")
-        st.balloons()
-        
-        # 重置状态
-        st.session_state.worker_type = None
-        st.session_state.formal_worker_info = None
-        st.session_state.temp_info = {}
-        st.rerun()
+        if worker_name:
+            img = Image.open(camera_image)
+            img = add_watermark(img, worker_name, st.session_state.user_lat, st.session_state.user_lon)
+            img_bytes = io.BytesIO()
+            img.save(img_bytes, format="JPEG")
+            
+            # 计算工时
+            work_h = ""
+            if clock_type == "签退" and not st.session_state.daka_data.empty:
+                mask = (st.session_state.daka_data["姓名"] == worker_name) & \
+                       (st.session_state.daka_data["日期"] == today) & \
+                       (st.session_state.daka_data["打卡类型"] == "签到")
+                if mask.any():
+                    t1 = datetime.strptime(st.session_state.daka_data[mask].iloc[0]["打卡时间"], "%H:%M")
+                    t2 = datetime.strptime(current_time, "%H:%M")
+                    mins = int((t2 - t1).total_seconds() / 60)
+                    work_h = f"{mins // 60}h{mins % 60}m"
+            
+            new_row = pd.DataFrame([{
+                "日期": today, "打卡时间": current_time, "姓名": worker_name,
+                "手机号": worker_phone, "身份证": worker_id, "劳务公司": worker_company,
+                "车间": worker_workshop, "工种": worker_job, "打卡类型": clock_type,
+                "工时": work_h, "纬度": st.session_state.user_lat, "经度": st.session_state.user_lon,
+                "照片": img_bytes.getvalue()
+            }])
+            st.session_state.daka_data = pd.concat([st.session_state.daka_data, new_row], ignore_index=True)
+            save_data(st.session_state.daka_data)
+            st.success(f"✅ {clock_type}成功！{worker_name}")
+            st.balloons()
+            
+            # 重置状态
+            st.session_state.worker_type = None
+            st.session_state.formal_worker_info = None
+            st.session_state.temp_info = {}
+            st.rerun()
 
 # ================== 查看记录 ==================
 st.divider()
-if st.button("📋 查看今日记录"):
-    worker_name = None
-    if st.session_state.worker_type == "formal" and st.session_state.formal_worker_info:
-        worker_name = st.session_state.formal_worker_info["name"]
-    elif st.session_state.worker_type == "temporary" and st.session_state.temp_info.get("name"):
-        worker_name = st.session_state.temp_info["name"]
+st.subheader("📋 我的打卡记录")
+
+if st.button("查看今日记录"):
+    worker_name = st.session_state.current_worker_name
     
-    if worker_name and not st.session_state.daka_data.empty:
-        records = st.session_state.daka_data[
-            (st.session_state.daka_data["日期"] == today) & 
-            (st.session_state.daka_data["姓名"] == worker_name)
-        ]
-        if records.empty:
-            st.info("暂无记录")
-        else:
-            st.dataframe(records[["打卡时间", "打卡类型", "工时"]])
+    if not worker_name:
+        if st.session_state.worker_type == "formal" and st.session_state.formal_worker_info:
+            worker_name = st.session_state.formal_worker_info["name"]
+        elif st.session_state.worker_type == "temporary" and st.session_state.temp_info.get("name"):
+            worker_name = st.session_state.temp_info["name"]
+    
+    if not worker_name:
+        st.warning("请先选择员工类型并输入工号/姓名")
+    elif st.session_state.daka_data.empty:
+        st.info("📭 暂无任何打卡记录")
+    else:
+        try:
+            records = st.session_state.daka_data[
+                (st.session_state.daka_data["日期"] == today) & 
+                (st.session_state.daka_data["姓名"] == worker_name)
+            ]
+            if records.empty:
+                st.info(f"📭 {worker_name} 今日暂无打卡记录")
+            else:
+                st.success(f"✅ {worker_name} 今日打卡记录")
+                st.dataframe(records[["打卡时间", "打卡类型", "工时", "车间"]])
+        except Exception as e:
+            st.error(f"查询失败：{e}")
 
 # ================== 管理员 ==================
 st.divider()
