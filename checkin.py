@@ -157,21 +157,6 @@ def normalize_worker_id(worker_id):
             return extracted_id
     return None
 
-# ================== 人脸检测函数（静默处理，不卡顿） ==================
-def detect_face(image):
-    try:
-        import cv2
-        import numpy as np
-        img = np.array(image.convert('RGB'))
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        face_cascade = cv2.CascadeClassifier(cascade_path)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
-        return len(faces) > 0, len(faces)
-    except:
-        return None, 0
-
 # ================== 数据持久化函数 ==================
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -210,8 +195,6 @@ if "current_worker_name" not in st.session_state:
     st.session_state.current_worker_name = None
 if "last_scanned_id" not in st.session_state:
     st.session_state.last_scanned_id = None
-if "face_check_passed" not in st.session_state:
-    st.session_state.face_check_passed = False
 
 st.set_page_config(page_title="荣基打卡", layout="wide", initial_sidebar_state="collapsed")
 st.title("🏭 荣基精密｜现场打卡系统")
@@ -371,14 +354,18 @@ if st.session_state.worker_type == "temporary" and not disabled:
 
 # ================== 拍照和打卡 ==================
 st.divider()
-st.subheader("📷 拍照打卡")
+st.subheader("📷 现场拍照")
+st.markdown("**请拍摄本人照片（背景为厂区即可）**")
+
 camera_col, info_col = st.columns([2, 1])
 with camera_col:
-    camera_image = st.camera_input("请拍摄人脸+厂区背景", disabled=disabled or not in_factory, key="camera")
+    camera_image = st.camera_input("点击拍照", disabled=disabled or not in_factory, key="camera")
 with info_col:
-    st.caption("⚠️ 必须当场拍摄清晰人脸")
     if camera_image:
-        st.success("✅ 已拍照")
+        st.success("✅ 照片已拍摄")
+        st.caption("照片将添加水印后保存")
+    else:
+        st.info("📸 请点击上方相机拍照")
 
 # ================== 打卡按钮 ==================
 col_clock1, col_clock2 = st.columns(2)
