@@ -234,6 +234,36 @@ SIGN_IN_END_MIN = time_to_minutes(SIGN_IN_END)
 SIGN_OUT_START_MIN = time_to_minutes(SIGN_OUT_START)
 SIGN_OUT_END_MIN = time_to_minutes(SIGN_OUT_END)
 
+# ================== 显示时间状态（醒目提示） ==================
+st.markdown("---")
+col_time1, col_time2, col_time3 = st.columns(3)
+with col_time1:
+    st.metric("签到时间", f"{SIGN_IN_START} - {SIGN_IN_END}")
+with col_time2:
+    st.metric("当前时间", current_time)
+with col_time3:
+    st.metric("签退时间", f"{SIGN_OUT_START} - {SIGN_OUT_END}")
+
+# 时间状态判断
+time_status = ""
+if current_minutes < SIGN_IN_START_MIN:
+    time_status = "⏰ 签到尚未开始"
+elif SIGN_IN_START_MIN <= current_minutes <= SIGN_IN_END_MIN:
+    time_status = "✅ 签到时间，可以签到"
+elif SIGN_IN_END_MIN < current_minutes < SIGN_OUT_START_MIN:
+    time_status = "⏰ 签到已结束，等待签退"
+elif SIGN_OUT_START_MIN <= current_minutes <= SIGN_OUT_END_MIN:
+    time_status = "✅ 签退时间，可以签退"
+else:
+    time_status = "❌ 今日打卡时间已结束"
+
+if "✅" in time_status:
+    st.success(time_status)
+elif "❌" in time_status:
+    st.error(time_status)
+else:
+    st.info(time_status)
+
 # ================== 定位UI ==================
 with st.expander("📍 位置验证", expanded=not st.session_state.location_verified):
     col1, col2 = st.columns(2)
@@ -268,8 +298,6 @@ if st.session_state.location_verified:
 else:
     in_factory = False
     disabled = True
-
-st.info(f"🕒 当前时间：{current_time} | {'工作日' if is_workday else '周末'}")
 
 # ================== 员工类型选择 ==================
 if not disabled:
@@ -352,7 +380,7 @@ if st.session_state.worker_type == "temporary" and not disabled:
     if temp_name and temp_valid:
         st.session_state.current_worker_name = temp_name
 
-# ================== 拍照和打卡 ==================
+# ================== 拍照 ==================
 st.divider()
 st.subheader("📷 现场拍照")
 st.markdown("**请拍摄本人照片（背景为厂区即可）**")
@@ -363,21 +391,44 @@ with camera_col:
 with info_col:
     if camera_image:
         st.success("✅ 照片已拍摄")
-        st.caption("照片将添加水印后保存")
     else:
         st.info("📸 请点击上方相机拍照")
 
-# ================== 打卡按钮 ==================
-col_clock1, col_clock2 = st.columns(2)
-formal_ok = (st.session_state.worker_type == "formal" and formal_verified)
-temp_ok = (st.session_state.worker_type == "temporary" and temp_valid)
-base_clock_ok = camera_image is not None and in_factory and st.session_state.location_verified
-sign_in_ok = base_clock_ok and is_workday and (SIGN_IN_START_MIN <= current_minutes <= SIGN_IN_END_MIN) and (formal_ok or temp_ok)
-clock_in = col_clock1.button("✅ 签到", use_container_width=True, disabled=not sign_in_ok)
-sign_out_ok = base_clock_ok and is_workday and (SIGN_OUT_START_MIN <= current_minutes <= SIGN_OUT_END_MIN) and (formal_ok or temp_ok)
-clock_out = col_clock2.button("🔚 签退", use_container_width=True, disabled=not sign_out_ok)
+# ================== 打卡按钮（带状态提示） ==================
+st.divider()
+st.subheader("⏰ 打卡操作")
 
-# ================== 提交打卡 ==================
+# 检查各项条件
+check_location_ok = in_factory and st.session_state.location_verified
+check_photo_ok = camera_image is not None
+check_worker_ok = (st.session_state.worker_type == "formal" and formal_verified) or (st.session_state.worker_type == "temporary" and temp_valid)
+check_workday = is_workday
+
+# 签到条件
+sign_in_time_ok = (SIGN_IN_START_MIN <= current_minutes <= SIGN_IN_END_MIN) and check_workday
+sign_in_btn_disabled = not (check_location_ok and check_photo_ok and check_worker_ok and sign_in_time_ok)
+
+# 签退条件
+sign_out_time_ok = (SIGN_OUT_START_MIN <= current_minutes <= SIGN_OUT_END_MIN) and check_workday
+sign_out_btn_disabled = not (check_location_ok and check_photo_ok and check_worker_ok and sign_out_time_ok)
+
+col_clock1, col_clock2 = st.columns(2)
+
+with col_clock1:
+    clock_in = st.button("✅ 签到", use_container_width=True, disabled=sign_in_btn_disabled)
+    if sign_in_btn_disabled and check_location_ok and check_photo_ok and check_worker_ok:
+        st.caption("⚠️ 当前不在签到时间段")
+    elif sign_in_btn_disabled:
+        st.caption("请先完成：定位、选员工、拍照")
+
+with col_clock2:
+    clock_out = st.button("🔚 签退", use_container_width=True, disabled=sign_out_btn_disabled)
+    if sign_out_btn_disabled and check_location_ok and check_photo_ok and check_worker_ok:
+        st.caption("⚠️ 当前不在签退时间段")
+    elif sign_out_btn_disabled:
+        st.caption("请先完成：定位、选员工、拍照")
+
+# ================== 处理打卡 ==================
 clock_type = None
 if clock_in:
     clock_type = "签到"
@@ -385,14 +436,14 @@ elif clock_out:
     clock_type = "签退"
 
 if clock_type and camera_image and in_factory and st.session_state.location_verified:
-    # 时间校验
+    # 最终时间校验
     if clock_type == "签到":
         if not (SIGN_IN_START_MIN <= current_minutes <= SIGN_IN_END_MIN):
-            st.error(f"❌ 签到时间：{SIGN_IN_START} - {SIGN_IN_END}")
+            st.error(f"❌ 签到失败！当前时间 {current_time} 不在签到时间 {SIGN_IN_START}-{SIGN_IN_END} 内")
             st.stop()
     else:
         if not (SIGN_OUT_START_MIN <= current_minutes <= SIGN_OUT_END_MIN):
-            st.error(f"❌ 签退时间：{SIGN_OUT_START} - {SIGN_OUT_END}")
+            st.error(f"❌ 签退失败！当前时间 {current_time} 不在签退时间 {SIGN_OUT_START}-{SIGN_OUT_END} 内")
             st.stop()
     
     worker_name = None
@@ -443,7 +494,7 @@ if clock_type and camera_image and in_factory and st.session_state.location_veri
         }])
         st.session_state.daka_data = pd.concat([st.session_state.daka_data, new_row], ignore_index=True)
         save_data(st.session_state.daka_data)
-        st.success(f"✅ {clock_type}成功！{worker_name}")
+        st.success(f"✅ {clock_type}成功！{worker_name} | 时间：{current_time}")
         st.balloons()
         
         # 重置状态
